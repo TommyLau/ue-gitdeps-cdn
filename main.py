@@ -25,6 +25,10 @@ async def main():
                       help="Download timeout in seconds (default: 30)")
     parser.add_argument("--chunk-size", type=int, default=8192,
                       help="Download chunk size in bytes (default: 8192)")
+    parser.add_argument("--force-verify", action="store_true",
+                      help="Force verification of all files even if previously verified")
+    parser.add_argument("--show-stats", action="store_true",
+                      help="Show verification statistics without downloading files")
     
     args = parser.parse_args()
     
@@ -38,8 +42,21 @@ async def main():
         max_retries=args.max_retries,
         timeout=args.timeout,
         chunk_size=args.chunk_size,
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        force_verify=args.force_verify
     )
+    
+    # If only showing stats, display them and exit
+    if args.show_stats and downloader.verification_manager:
+        stats = downloader.verification_manager.get_statistics()
+        print("\nVerification Statistics:")
+        print(f"Total verified files: {stats['total_records']}")
+        print(f"Valid files: {stats['status_counts'].get('VALID', 0)}")
+        print(f"Files with hash mismatch: {stats['status_counts'].get('HASH_MISMATCH', 0)}")
+        print(f"Corrupt files: {stats['status_counts'].get('CORRUPT', 0)}")
+        print(f"Verifications today: {stats['recent_verifications']}")
+        print(f"Verification database size: {stats['database_size_bytes'] / (1024*1024):.2f} MB")
+        return 0
     
     try:
         # Parse dependencies

@@ -96,6 +96,8 @@ docker pull ghcr.io/tommylau/ue-gitdeps-cdn:v1.0.0
 --max-retries INT     Maximum number of download retries (default: 5)
 --timeout INT         Download timeout in seconds (default: 30)
 --chunk-size INT      Download chunk size in bytes (default: 8192)
+--force-verify        Force verification of all files even if previously verified
+--show-stats          Show verification statistics without downloading files
 ```
 
 ## Download Status Indicators
@@ -121,6 +123,23 @@ The tool implements intelligent download handling:
 - If a file exists and matches the expected size, hash verification is performed
 - Hash verification is performed after decompression for gzipped files
 - Real-time progress tracking for both decompression and hash verification phases
+
+## Verification Record System
+
+The tool includes a sophisticated verification record system that:
+
+- Stores verification results in a SQLite database for efficient retrieval
+- Maintains exactly one record per file, updating existing records rather than adding new ones
+- Skips hash verification for files that haven't changed since last verification
+- Tracks file size, modification time, and expected hash to detect changes
+- Provides detailed statistics about verification status
+- Improves performance by avoiding redundant verifications
+
+To use this feature:
+
+- Files are automatically recorded after successful verification
+- Use `--force-verify` to verify all files regardless of previous verification
+- Use `--show-stats` to display verification statistics without downloading
 
 ## Configuration
 

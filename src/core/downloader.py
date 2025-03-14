@@ -9,6 +9,7 @@ from tqdm import tqdm
 from tqdm.asyncio import tqdm as async_tqdm
 from pathlib import Path
 from enum import Enum, auto
+from src.core.verification import SQLiteVerificationManager
 
 
 class DownloadStatus(Enum):
@@ -28,7 +29,8 @@ class AsyncDownloader:
     """Manage concurrent downloads with progress tracking."""
     
     def __init__(self, max_workers: int = 5, max_retries: int = 5,
-                 timeout: int = 30, chunk_size: int = 8192, output_dir: str | Path = None):
+                 timeout: int = 30, chunk_size: int = 8192, output_dir: str | Path = None,
+                 force_verify: bool = False):
         """Initialize the downloader with configuration parameters."""
         self.max_workers = max_workers
         self.max_retries = max_retries
@@ -36,6 +38,9 @@ class AsyncDownloader:
         self.chunk_size = chunk_size
         self.output_dir = Path(output_dir) if output_dir else None
         self.session = None
+        self.verification_manager = SQLiteVerificationManager(
+            self.output_dir, force_verify=force_verify
+        ) if self.output_dir else None
     
     async def __aenter__(self):
         """Create aiohttp session when entering context."""
@@ -44,9 +49,11 @@ class AsyncDownloader:
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Close aiohttp session when exiting context."""
+        """Close aiohttp session and database when exiting context."""
         if self.session:
             await self.session.close()
+        if self.verification_manager:
+            self.verification_manager.close()
     
     def calculate_hash(self, file_path: str | Path, progress_callback=None) -> str:
         """
@@ -184,6 +191,12 @@ class AsyncDownloader:
         Returns:
             Tuple of (success, status)
         """
+        # Check if verification can be skipped based on records
+        if self.verification_manager and not self.verification_manager.is_verification_needed(dest_path, expected_hash):
+            status = DownloadStatus.VALID
+            self._update_progress_bar(pbar, status, dest_path)
+            return True, status
+            
         hash_callback = self._create_hash_progress_callback(pbar, dest_path, file_size)
         actual_hash = self.calculate_hash(dest_path, hash_callback)
         
@@ -196,16 +209,31 @@ class AsyncDownloader:
             self._update_progress_bar(pbar, status, dest_path)
             if dest_path.exists():
                 dest_path.unlink()
+            
+            # Record the corrupt file status
+            if self.verification_manager:
+                self.verification_manager.update_record(dest_path, expected_hash, 'CORRUPT')
+                
             return False, status
         
         hash_matches = actual_hash.lower() == expected_hash.lower()
         if not hash_matches:
             status = DownloadStatus.HASH  # Hash mismatch
             self._update_progress_bar(pbar, status, dest_path)
+            
+            # Record the hash mismatch status
+            if self.verification_manager:
+                self.verification_manager.update_record(dest_path, expected_hash, 'HASH_MISMATCH')
+                
             return False, status
         
         status = DownloadStatus.VALID  # File is valid
         self._update_progress_bar(pbar, status, dest_path)
+        
+        # Record the valid file status
+        if self.verification_manager:
+            self.verification_manager.update_record(dest_path, expected_hash, 'VALID')
+            
         return True, status
     
     async def download_file(self, url: str, dest: str | Path, file_size: int, expected_hash: str = None) -> bool:
@@ -355,4 +383,15 @@ class AsyncDownloader:
             
             # Print summary
             successful = sum(1 for task in tasks if task.result())
-            print(f"\nDownload complete: {successful}/{total_files} files downloaded successfully") 
+            print(f"\nDownload complete: {successful}/{total_files} files downloaded successfully")
+            
+            # Print verification statistics if available
+            if self.verification_manager:
+                stats = self.verification_manager.get_statistics()
+                print("\nVerification Statistics:")
+                print(f"Total verified files: {stats['total_records']}")
+                print(f"Valid files: {stats['status_counts'].get('VALID', 0)}")
+                print(f"Files with hash mismatch: {stats['status_counts'].get('HASH_MISMATCH', 0)}")
+                print(f"Corrupt files: {stats['status_counts'].get('CORRUPT', 0)}")
+                print(f"Verifications today: {stats['recent_verifications']}")
+                print(f"Verification database size: {stats['database_size_bytes'] / (1024*1024):.2f} MB") 
