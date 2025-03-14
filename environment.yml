@@ -1,0 +1,14 @@
+name: ue-gitdeps-env
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+    - aiohttp>=3.9.1
+    - xmltodict>=0.13.0
+    - tqdm>=4.65.0
+    - black>=23.7.0
+    - isort>=5.12.0
+    - mypy>=1.5.1
