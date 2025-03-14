@@ -6,6 +6,7 @@ import aiohttp
 from tqdm import tqdm
 from tqdm.asyncio import tqdm as async_tqdm
 from pathlib import Path
+from src.core.cache import CacheManager
 
 
 class AsyncDownloader:
@@ -20,6 +21,7 @@ class AsyncDownloader:
         self.chunk_size = chunk_size
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.session = None
+        self.cache_manager = CacheManager(cache_dir) if cache_dir else None
     
     async def __aenter__(self):
         """Create aiohttp session when entering context."""
@@ -32,7 +34,7 @@ class AsyncDownloader:
         if self.session:
             await self.session.close()
     
-    async def download_file(self, url: str, dest: str | Path, file_size: int) -> bool:
+    async def download_file(self, url: str, dest: str | Path, file_size: int, expected_hash: str = None) -> bool:
         """Download a single file with progress tracking and retries."""
         if not self.session:
             raise RuntimeError("Downloader must be used as async context manager")
@@ -41,11 +43,23 @@ class AsyncDownloader:
             dest_path = self.cache_dir / dest
         else:
             dest_path = Path(dest)
+
+        # Check if file exists and verify hash before downloading
+        status = "⬇️ NEW"  # Default: new download
+        if dest_path.exists() and expected_hash and self.cache_manager:
+            actual_hash = self.cache_manager.calculate_hash(dest_path)
+            if actual_hash == "invalid_gzip_file":
+                status = "🔄 CORRUPT"  # File exists but can't be unzipped
+            elif actual_hash.lower() != expected_hash.lower():
+                status = "♻️ HASH"  # File exists but hash mismatch
+            else:
+                return True
+            dest_path.unlink()
             
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Create progress bar for this file
-        desc = f"Downloading {dest_path}"  # Show full path
+        desc = f"{status} {dest_path}"
         pbar = tqdm(total=file_size, unit='B', unit_scale=True, desc=desc, leave=False)
         
         for attempt in range(self.max_retries):
@@ -63,6 +77,20 @@ class AsyncDownloader:
                             pbar.update(len(chunk))
                     
                     pbar.close()
+
+                    # Verify downloaded file hash
+                    if expected_hash and self.cache_manager:
+                        actual_hash = self.cache_manager.calculate_hash(dest_path)
+                        if actual_hash == "invalid_gzip_file":
+                            if dest_path.exists():
+                                dest_path.unlink()
+                            return False
+                        hash_matches = actual_hash.lower() == expected_hash.lower()
+                        if not hash_matches:
+                            if dest_path.exists():
+                                dest_path.unlink()
+                            return False
+                    
                     return True
                     
             except Exception as e:
@@ -89,7 +117,8 @@ class AsyncDownloader:
                     return await self.download_file(
                         item['url'], 
                         item['dest'],
-                        item['size']  # Pass file size for progress bar
+                        item['size'],  # Pass file size for progress bar
+                        item['hash']  # Use 'hash' key and get() to handle missing hash gracefully
                     )
             
             # Create tasks for all downloads

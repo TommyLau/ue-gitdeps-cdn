@@ -1,6 +1,7 @@
 """Cache management for downloaded files."""
 
 import hashlib
+import gzip
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -95,9 +96,25 @@ class CacheManager:
         return cached_path
     
     def calculate_hash(self, file_path: str | Path) -> str:
-        """Calculate SHA-256 hash of a file."""
-        sha256_hash = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for byte_block in iter(lambda: f.read(4096), b""):
-                sha256_hash.update(byte_block)
-        return sha256_hash.hexdigest() 
+        """Calculate SHA-1 hash of a file after decompressing if gzipped."""
+        sha1_hash = hashlib.sha1()
+        try:
+            with gzip.open(file_path, 'rb') as gz_file:
+                try:
+                    # Try to read as gzip and handle decompression errors
+                    while True:
+                        chunk = gz_file.read(4096)
+                        if not chunk:
+                            break
+                        sha1_hash.update(chunk)
+                except (OSError, EOFError, gzip.BadGzipFile) as e:
+                    print(f"  WARNING: Failed to decompress file for hash calculation: {e}")
+                    # Return a hash that won't match to force re-download
+                    return "invalid_gzip_file"
+        except OSError:
+            # If not a gzip file, read it normally
+            with open(file_path, "rb") as f:
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha1_hash.update(byte_block)
+        
+        return sha1_hash.hexdigest() 
