@@ -49,7 +49,7 @@ python main.py path/to/Commit.gitdeps.xml [options]
 ```
 --workers INT          Number of concurrent downloads (default: 5)
 --cache-dir PATH      Directory for cached files (default: ./output)
---max-retries INT     Maximum number of download retries (default: 3)
+--max-retries INT     Maximum number of download retries (default: 5)
 --timeout INT         Download timeout in seconds (default: 30)
 --chunk-size INT      Download chunk size in bytes (default: 8192)
 --cache-max-size STR  Maximum cache size (default: 100GB)

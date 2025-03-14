@@ -20,8 +20,8 @@ async def main():
     parser.add_argument("--workers", type=int, default=5, help="Number of concurrent downloads")
     parser.add_argument("--cache-dir", type=Path, default=get_default_cache_dir(),
                       help="Directory for cached files (default: ./output)")
-    parser.add_argument("--max-retries", type=int, default=3,
-                      help="Maximum number of download retries (default: 3)")
+    parser.add_argument("--max-retries", type=int, default=5,
+                      help="Maximum number of download retries (default: 5)")
     parser.add_argument("--timeout", type=int, default=30,
                       help="Download timeout in seconds (default: 30)")
     parser.add_argument("--chunk-size", type=int, default=8192,
