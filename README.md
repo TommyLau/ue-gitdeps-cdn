@@ -7,7 +7,9 @@ A Python tool to download Unreal Engine dependencies specified in `Commit.gitdep
 - Automatically parse `Commit.gitdeps.xml` file to extract dependency URLs
 - Asynchronous downloading with configurable concurrency
 - Smart local file caching with size management
-- SHA-256 hash verification for downloaded files
+- Intelligent download resume capability for interrupted transfers
+- High-performance SHA-1 hash verification for downloaded files
+- Real-time progress tracking for download, decompression, and verification
 - Seamless integration with Nginx for static CDN serving
 
 ## Requirements
@@ -56,13 +58,37 @@ python main.py path/to/Commit.gitdeps.xml [options]
 --cache-cleanup-threshold INT  Cache cleanup threshold percentage (default: 90)
 ```
 
+## Download Status Indicators
+
+The tool provides detailed status indicators during the download process:
+
+- `⬇️ NEW` - New file download
+- `⏯️ RESUME` - Resuming a partial download
+- `📥 REDOWN` - Re-downloading a file (due to size mismatch or failed resume)
+- `🔄 UNZIP` - Decompressing gzipped content
+- `🔍 VERIFY` - Verifying file hash
+- `✅ VALID` - File is valid and verified
+- `🔄 CORRUPT` - File exists but can't be unzipped
+- `♻️ HASH` - Hash mismatch detected
+- `❌ ERROR` - Error during download or verification
+
+## Smart Download Handling
+
+The tool implements intelligent download handling:
+
+- If a file exists and is larger than expected, it will be re-downloaded
+- If a file exists but is smaller than expected, download will resume from where it left off
+- If a file exists and matches the expected size, hash verification is performed
+- Hash verification is performed after decompression for gzipped files
+- Real-time progress tracking for both decompression and hash verification phases
+
 ## Cache Management
 
 The tool includes a sophisticated cache management system that:
 - Stores downloaded files in a configurable cache directory
 - Automatically cleans up old files when cache size exceeds threshold
 - Uses access time-based eviction strategy
-- Verifies file integrity using SHA-256 hashes
+- Verifies file integrity using SHA-1 hashes
 
 ## Configuration
 

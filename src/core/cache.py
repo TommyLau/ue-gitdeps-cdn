@@ -95,26 +95,60 @@ class CacheManager:
         
         return cached_path
     
-    def calculate_hash(self, file_path: str | Path) -> str:
-        """Calculate SHA-1 hash of a file after decompressing if gzipped."""
+    def calculate_hash(self, file_path: str | Path, progress_callback=None) -> str:
+        """
+        Calculate SHA-1 hash of a file after decompressing gzipped content.
+        
+        Args:
+            file_path: Path to the gzipped file to hash
+            progress_callback: Optional callback function to report progress (phase, progress)
+                               phase: 'decompress' or 'hash', progress: 0.0 to 1.0
+        
+        Returns:
+            SHA-1 hash as hexadecimal string or "invalid_gzip_file" if decompression fails
+        """
         sha1_hash = hashlib.sha1()
+        file_path = Path(file_path)
+        file_size = file_path.stat().st_size
+        
         try:
-            with gzip.open(file_path, 'rb') as gz_file:
-                try:
-                    # Try to read as gzip and handle decompression errors
+            # Process gzip file - stream directly without storing in memory
+            try:
+                with gzip.open(file_path, 'rb') as gz_file:
+                    # For progress reporting
+                    total_read = 0
+                    last_progress_report = 0
+                    
+                    # Read in chunks and update hash directly
                     while True:
-                        chunk = gz_file.read(4096)
+                        chunk = gz_file.read(65536)  # Use larger chunks (64KB)
                         if not chunk:
                             break
+                        
+                        # Update hash with this chunk
                         sha1_hash.update(chunk)
-                except (OSError, EOFError, gzip.BadGzipFile) as e:
-                    print(f"  WARNING: Failed to decompress file for hash calculation: {e}")
-                    # Return a hash that won't match to force re-download
-                    return "invalid_gzip_file"
-        except OSError:
-            # If not a gzip file, read it normally
-            with open(file_path, "rb") as f:
-                for byte_block in iter(lambda: f.read(4096), b""):
-                    sha1_hash.update(byte_block)
+                        
+                        # Update decompression progress
+                        if progress_callback:
+                            total_read += len(chunk)
+                            # Only report progress every ~1% to reduce overhead
+                            current_progress = min(total_read / (file_size * 10), 1.0)  # Estimate decompressed size
+                            if current_progress - last_progress_report >= 0.01:
+                                progress_callback('decompress', current_progress)
+                                last_progress_report = current_progress
+                
+                # Report 100% completion for decompression phase
+                if progress_callback:
+                    progress_callback('decompress', 1.0)
+                    # Also report 100% for hash phase since we've already calculated it
+                    progress_callback('hash', 1.0)
+                
+            except (OSError, EOFError, gzip.BadGzipFile) as e:
+                print(f"  WARNING: Failed to decompress file for hash calculation: {e}")
+                return "invalid_gzip_file"
         
+        except Exception as e:
+            print(f"  ERROR: Failed to calculate hash: {e}")
+            return "invalid_gzip_file"
+            
         return sha1_hash.hexdigest() 

@@ -65,24 +65,44 @@ class AsyncDownloader:
                         start_pos = 0
                     # If file size matches, verify hash
                     elif current_size == file_size and expected_hash and self.cache_manager:
-                        status = "🔍 VERIFY"  # File exists, verifying hash
-                        pbar.set_description(f"[{status:^10}] {dest_path}")
-                        # Show 100% for verification
+                        # Create a progress callback for hash verification
+                        def hash_progress_callback(phase, progress):
+                            if phase == 'decompress':
+                                status = "🔄 UNZIP"  # Decompressing file
+                                pbar.set_description(f"[{status:^10}] {dest_path}")
+                                # Show full 0-100% for decompression
+                                pbar.n = int(file_size * progress)
+                                pbar.refresh()
+                            elif phase == 'hash':
+                                status = "🔍 VERIFY"  # Calculating hash
+                                pbar.set_description(f"[{status:^10}] {dest_path}")
+                                # Show full 0-100% for hash verification
+                                pbar.n = int(file_size * progress)
+                                pbar.refresh()
+                        
+                        # Calculate hash with progress updates
+                        actual_hash = self.cache_manager.calculate_hash(dest_path, hash_progress_callback)
+                        
+                        # Ensure progress bar is at 100% after verification
                         pbar.n = file_size
                         pbar.refresh()
                         
-                        actual_hash = self.cache_manager.calculate_hash(dest_path)
                         if actual_hash == "invalid_gzip_file":
                             status = "🔄 CORRUPT"  # File exists but can't be unzipped
+                            pbar.set_description(f"[{status:^10}] {dest_path}")
+                            pbar.refresh()
                             dest_path.unlink()
                             start_pos = 0
                         elif actual_hash.lower() == expected_hash.lower():
                             status = "✅ VALID"  # File is valid
                             pbar.set_description(f"[{status:^10}] {dest_path}")
+                            pbar.refresh()
                             pbar.close()
                             return True  # File is valid
                         else:
                             status = "♻️ HASH"  # File exists but hash mismatch
+                            pbar.set_description(f"[{status:^10}] {dest_path}")
+                            pbar.refresh()
                             dest_path.unlink()
                             start_pos = 0
                     # If file is smaller, try to resume download
@@ -125,14 +145,32 @@ class AsyncDownloader:
                     
                     # Only verify hash if file size matches expected size
                     if dest_path.stat().st_size == file_size and expected_hash and self.cache_manager:
-                        status = "🔍 VERIFY"  # Verifying hash after download
-                        pbar.set_description(f"[{status:^10}] {dest_path}")
-                        # Already at 100%, no need to update
+                        # Create a progress callback for hash verification
+                        def hash_progress_callback(phase, progress):
+                            if phase == 'decompress':
+                                status = "🔄 UNZIP"  # Decompressing file
+                                pbar.set_description(f"[{status:^10}] {dest_path}")
+                                # Show full 0-100% for decompression
+                                pbar.n = int(file_size * progress)
+                                pbar.refresh()
+                            elif phase == 'hash':
+                                status = "🔍 VERIFY"  # Calculating hash
+                                pbar.set_description(f"[{status:^10}] {dest_path}")
+                                # Show full 0-100% for hash verification
+                                pbar.n = int(file_size * progress)
+                                pbar.refresh()
                         
-                        actual_hash = self.cache_manager.calculate_hash(dest_path)
+                        # Calculate hash with progress updates
+                        actual_hash = self.cache_manager.calculate_hash(dest_path, hash_progress_callback)
+                        
+                        # Ensure progress bar is at 100% after verification
+                        pbar.n = file_size
+                        pbar.refresh()
+                        
                         if actual_hash == "invalid_gzip_file":
                             status = "🔄 CORRUPT"  # File exists but can't be unzipped
                             pbar.set_description(f"[{status:^10}] {dest_path}")
+                            pbar.refresh()
                             if dest_path.exists():
                                 dest_path.unlink()
                             pbar.close()
@@ -141,16 +179,18 @@ class AsyncDownloader:
                         if not hash_matches:
                             if attempt < self.max_retries - 1:  # Try one re-download on hash mismatch
                                 status = "📥 REDOWN"
+                                pbar.set_description(f"[{status:^10}] {dest_path}")
+                                pbar.refresh()
                                 if dest_path.exists():
                                     dest_path.unlink()
                                 start_pos = 0
-                                pbar.set_description(f"[{status:^10}] {dest_path}")
                                 pbar.reset(total=file_size)
                                 pbar.n = 0
                                 pbar.refresh()
                                 continue
                             status = "♻️ HASH"  # Final hash mismatch
                             pbar.set_description(f"[{status:^10}] {dest_path}")
+                            pbar.refresh()
                             if dest_path.exists():
                                 dest_path.unlink()
                             pbar.close()
