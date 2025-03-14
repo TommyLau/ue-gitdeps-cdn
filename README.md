@@ -69,6 +69,25 @@ docker run -v /path/on/host/output:/app/output ue-gitdeps-cdn path/to/Commit.git
 
 Replace `/path/on/host/output` with the directory on your host machine where you want to store the downloaded files.
 
+### Using Pre-built Docker Images
+
+This repository includes GitHub Actions workflows that automatically build and publish Docker images to GitHub Container Registry (GHCR) when changes are pushed.
+
+To use the pre-built image:
+
+```bash
+# Pull the latest image
+docker pull ghcr.io/tommylau/ue-gitdeps-cdn:main
+
+# Run the container
+docker run -v /path/on/host/output:/app/output ghcr.io/tommylau/ue-gitdeps-cdn:main path/to/Commit.gitdeps.xml [options]
+```
+
+You can also use specific version tags:
+```bash
+docker pull ghcr.io/tommylau/ue-gitdeps-cdn:v1.0.0
+```
+
 ### Command-line Options
 
 ```
@@ -142,6 +161,28 @@ server {
     }
 }
 ```
+
+## CI/CD with GitHub Actions
+
+This repository includes GitHub Actions workflows for continuous integration and delivery:
+
+### Docker Image Build and Publish
+
+The workflow automatically builds and publishes Docker images to GitHub Container Registry (GHCR) when:
+- Code is pushed to the `main` branch
+- A new tag is created (e.g., `v1.0.0`)
+- A pull request is opened against the `main` branch (image is built but not published)
+
+The workflow:
+1. Builds the Docker image using the repository's Dockerfile
+2. Tags the image with appropriate version information
+3. Pushes the image to GHCR (except for pull requests)
+4. Utilizes caching to speed up subsequent builds
+
+To use this feature:
+1. Ensure your repository has the necessary permissions to publish packages
+2. Push your changes to the repository
+3. Access your Docker images at `ghcr.io/username/ue-gitdeps-cdn`
 
 ## Dependencies
 
