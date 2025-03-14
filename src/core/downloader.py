@@ -50,7 +50,7 @@ class AsyncDownloader:
         status = "⬇️ NEW"  # Default: new download
         start_pos = 0
         desc = f"[{status:^10}] {dest_path}"
-        pbar = tqdm(total=file_size, initial=start_pos, unit='B', unit_scale=True, desc=desc, leave=False)
+        pbar = tqdm(total=file_size, initial=start_pos, unit='B', unit_scale=True, desc=desc, leave=True)
        
         for attempt in range(self.max_retries):
             try:
@@ -65,12 +65,20 @@ class AsyncDownloader:
                         start_pos = 0
                     # If file size matches, verify hash
                     elif current_size == file_size and expected_hash and self.cache_manager:
+                        status = "🔍 VERIFY"  # File exists, verifying hash
+                        pbar.set_description(f"[{status:^10}] {dest_path}")
+                        # Show 100% for verification
+                        pbar.n = file_size
+                        pbar.refresh()
+                        
                         actual_hash = self.cache_manager.calculate_hash(dest_path)
                         if actual_hash == "invalid_gzip_file":
                             status = "🔄 CORRUPT"  # File exists but can't be unzipped
                             dest_path.unlink()
                             start_pos = 0
                         elif actual_hash.lower() == expected_hash.lower():
+                            status = "✅ VALID"  # File is valid
+                            pbar.set_description(f"[{status:^10}] {dest_path}")
                             pbar.close()
                             return True  # File is valid
                         else:
@@ -86,7 +94,8 @@ class AsyncDownloader:
                 pbar.set_description(f"[{status:^10}] {dest_path}")
                 # Reset with initial position but maintain the same bar format
                 pbar.reset(total=file_size)
-                pbar.update(start_pos)
+                pbar.n = start_pos
+                pbar.refresh()
 
                 headers = {'Range': f'bytes={start_pos}-'} if start_pos > 0 else {}
                 async with self.session.get(url, headers=headers) as response:
@@ -97,7 +106,8 @@ class AsyncDownloader:
                             dest_path.unlink()
                         pbar.set_description(f"[{status:^10}] {dest_path}")
                         pbar.reset(total=file_size)
-                        pbar.update(start_pos)
+                        pbar.n = 0
+                        pbar.refresh()
                         continue
                     
                     if response.status not in (200, 206):
@@ -115,8 +125,14 @@ class AsyncDownloader:
                     
                     # Only verify hash if file size matches expected size
                     if dest_path.stat().st_size == file_size and expected_hash and self.cache_manager:
+                        status = "🔍 VERIFY"  # Verifying hash after download
+                        pbar.set_description(f"[{status:^10}] {dest_path}")
+                        # Already at 100%, no need to update
+                        
                         actual_hash = self.cache_manager.calculate_hash(dest_path)
                         if actual_hash == "invalid_gzip_file":
+                            status = "🔄 CORRUPT"  # File exists but can't be unzipped
+                            pbar.set_description(f"[{status:^10}] {dest_path}")
                             if dest_path.exists():
                                 dest_path.unlink()
                             pbar.close()
@@ -130,19 +146,25 @@ class AsyncDownloader:
                                 start_pos = 0
                                 pbar.set_description(f"[{status:^10}] {dest_path}")
                                 pbar.reset(total=file_size)
-                                pbar.update(start_pos)
+                                pbar.n = 0
+                                pbar.refresh()
                                 continue
+                            status = "♻️ HASH"  # Final hash mismatch
+                            pbar.set_description(f"[{status:^10}] {dest_path}")
                             if dest_path.exists():
                                 dest_path.unlink()
                             pbar.close()
                             return False
                     
+                    status = "✅ VALID"  # Download complete and valid
+                    pbar.set_description(f"[{status:^10}] {dest_path}")
                     pbar.close()
                     return True
                     
             except Exception as e:
                 if attempt == self.max_retries - 1:
-                    pbar.set_description(f"❌ Error: {str(e)[:50]}...")
+                    status = "❌ ERROR"
+                    pbar.set_description(f"[{status:^10}] {str(e)[:50]}...")
                     pbar.close()
                     return False
                 
@@ -150,12 +172,16 @@ class AsyncDownloader:
                 if dest_path.exists():
                     start_pos = dest_path.stat().st_size
                     status = "⏯️ RESUME"
+                else:
+                    start_pos = 0
+                    status = "⬇️ NEW"
                 
                 pbar.set_description(f"[{status:^10}] {dest_path}")
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
                 # Reset with proper initial position
                 pbar.reset(total=file_size)
-                pbar.update(start_pos)
+                pbar.n = start_pos
+                pbar.refresh()
                 continue
         
         pbar.close()
