@@ -2,6 +2,8 @@
 
 import asyncio
 import argparse
+import signal
+import sys
 from pathlib import Path
 from src.core.parser import GitDepsParser
 from src.core.downloader import AsyncDownloader
@@ -14,6 +16,8 @@ def get_default_output_dir() -> Path:
 
 async def main():
     """Main application entry point."""
+    global _global_downloader
+    
     parser = argparse.ArgumentParser(description="Download UE dependencies from Commit.gitdeps.xml")
     parser.add_argument("xml_path", help="Path to Commit.gitdeps.xml")
     parser.add_argument("--workers", type=int, default=5, help="Number of concurrent downloads")
@@ -46,6 +50,9 @@ async def main():
         force_verify=args.force_verify
     )
     
+    # Set the global downloader reference for the exception handler
+    _global_downloader = downloader
+    
     # If only showing stats, display them and exit
     if args.show_stats and downloader.verification_manager:
         stats = downloader.verification_manager.get_statistics()
@@ -56,6 +63,9 @@ async def main():
         print(f"Corrupt files: {stats['status_counts'].get('CORRUPT', 0)}")
         print(f"Verifications today: {stats['recent_verifications']}")
         print(f"Verification database size: {stats['database_size_bytes'] / (1024*1024):.2f} MB")
+        # Ensure database is properly closed
+        if downloader.verification_manager:
+            downloader.verification_manager.close()
         return 0
     
     try:
@@ -65,13 +75,46 @@ async def main():
         # Download files
         await downloader.download_batch(deps)
         
+    except KeyboardInterrupt:
+        print("\nOperation interrupted by user. Flushing database...")
+        # Ensure database is properly flushed on keyboard interrupt
+        if downloader.verification_manager:
+            downloader.verification_manager.flush()
+        return 1
     except Exception as e:
         print(f"Error: {e}")
+        # Ensure database is properly flushed on error
+        if downloader.verification_manager:
+            downloader.verification_manager.flush()
         return 1
     
     return 0
 
 
+# Store a reference to the downloader for the global exception handler
+_global_downloader = None
+
 if __name__ == "__main__":
-    exit_code = asyncio.run(main())
-    exit(exit_code) 
+    # Define a custom exception handler for asyncio.run
+    def custom_exception_handler(loop, context):
+        msg = context.get("exception", context["message"])
+        print(f"Caught exception: {msg}")
+        # Use the global downloader reference
+        if _global_downloader is not None and _global_downloader.verification_manager:
+            _global_downloader.verification_manager.flush()
+        sys.exit(1)
+    
+    try:
+        # Configure the event loop policy to use our custom exception handler
+        # This will be used by asyncio.run() internally
+        policy = asyncio.get_event_loop_policy()
+        loop = policy.new_event_loop()
+        loop.set_exception_handler(custom_exception_handler)
+        asyncio.set_event_loop(loop)
+        
+        # Run the main function
+        exit_code = asyncio.run(main())
+        exit(exit_code)
+    except KeyboardInterrupt:
+        print("\nProgram interrupted by user. Exiting...")
+        exit(1) 

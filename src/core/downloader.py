@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import gzip
+import signal
 from typing import List, Dict, Callable, Tuple
 import aiohttp
 from tqdm import tqdm
@@ -41,6 +42,37 @@ class AsyncDownloader:
         self.verification_manager = SQLiteVerificationManager(
             self.output_dir, force_verify=force_verify
         ) if self.output_dir else None
+        
+        # Register signal handlers for graceful shutdown
+        self._register_signal_handlers()
+    
+    def _register_signal_handlers(self):
+        """Register signal handlers to ensure database is properly closed on interruption."""
+        if not self.verification_manager:
+            return
+            
+        # Define the signal handler
+        def signal_handler(sig, frame):
+            print(f"\nDownloader received signal {sig}, ensuring database is flushed...")
+            if self.verification_manager:
+                self.verification_manager.flush()
+            # Don't exit here, let the main program handle that
+        
+        # Register the handler for common interrupt signals
+        # We use a different approach than in verification.py to avoid conflicts
+        # This handler will only flush the database but not exit
+        previous_sigint = signal.getsignal(signal.SIGINT)
+        if previous_sigint != signal.SIG_IGN and previous_sigint != signal.SIG_DFL:
+            # Only register if there's not already a custom handler
+            pass
+        else:
+            signal.signal(signal.SIGINT, signal_handler)
+            
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+        if previous_sigterm != signal.SIG_IGN and previous_sigterm != signal.SIG_DFL:
+            pass
+        else:
+            signal.signal(signal.SIGTERM, signal_handler)
     
     async def __aenter__(self):
         """Create aiohttp session when entering context."""
@@ -53,6 +85,10 @@ class AsyncDownloader:
         if self.session:
             await self.session.close()
         if self.verification_manager:
+            # If exiting due to an exception, make sure to flush the database
+            if exc_type is not None:
+                print(f"Exiting context with exception: {exc_type.__name__}: {exc_val}")
+                self.verification_manager.flush()
             self.verification_manager.close()
     
     def calculate_hash(self, file_path: str | Path, progress_callback=None) -> str:
@@ -351,47 +387,58 @@ class AsyncDownloader:
     
     async def download_batch(self, items: List[Dict]) -> None:
         """Handle concurrent downloads of multiple files."""
-        async with self:
-            # Create semaphore to limit concurrent downloads
-            semaphore = asyncio.Semaphore(self.max_workers)
-            
-            async def download_with_semaphore(item: Dict) -> bool:
-                async with semaphore:
-                    return await self.download_file(
-                        item['url'],
-                        item['dest'],
-                        item['compressed_size'],  # Pass compressed size for progress bar
-                        item['hash']  # Use 'hash' key and get() to handle missing hash gracefully
-                    )
-            
-            # Create tasks for all downloads
-            tasks = [
-                asyncio.create_task(download_with_semaphore(item))
-                for item in items
-            ]
-            
-            # Show overall progress
-            total_files = len(tasks)
-            with tqdm(total=total_files, desc=f"Total Progress ({total_files} files)") as pbar:
-                completed = 0
-                for coro in asyncio.as_completed(tasks):
-                    result = await coro
-                    completed += 1
-                    pbar.update(1)
-                    if result:
-                        pbar.set_postfix({"success": f"{completed}/{total_files}"})
-            
-            # Print summary
-            successful = sum(1 for task in tasks if task.result())
-            print(f"\nDownload complete: {successful}/{total_files} files downloaded successfully")
-            
-            # Print verification statistics if available
+        try:
+            async with self:
+                # Create semaphore to limit concurrent downloads
+                semaphore = asyncio.Semaphore(self.max_workers)
+                
+                async def download_with_semaphore(item: Dict) -> bool:
+                    async with semaphore:
+                        return await self.download_file(
+                            item['url'],
+                            item['dest'],
+                            item['compressed_size'],  # Pass compressed size for progress bar
+                            item['hash']  # Use 'hash' key and get() to handle missing hash gracefully
+                        )
+                
+                # Create tasks for all downloads
+                tasks = [
+                    asyncio.create_task(download_with_semaphore(item))
+                    for item in items
+                ]
+                
+                # Show overall progress
+                total_files = len(tasks)
+                with tqdm(total=total_files, desc=f"Total Progress ({total_files} files)") as pbar:
+                    completed = 0
+                    for coro in asyncio.as_completed(tasks):
+                        result = await coro
+                        completed += 1
+                        pbar.update(1)
+                        if result:
+                            pbar.set_postfix({"success": f"{completed}/{total_files}"})
+                
+                # Print summary
+                successful = sum(1 for task in tasks if task.result())
+                print(f"\nDownload complete: {successful}/{total_files} files downloaded successfully")
+                
+                # Print verification statistics if available
+                if self.verification_manager:
+                    stats = self.verification_manager.get_statistics()
+                    print("\nVerification Statistics:")
+                    print(f"Total verified files: {stats['total_records']}")
+                    print(f"Valid files: {stats['status_counts'].get('VALID', 0)}")
+                    print(f"Files with hash mismatch: {stats['status_counts'].get('HASH_MISMATCH', 0)}")
+                    print(f"Corrupt files: {stats['status_counts'].get('CORRUPT', 0)}")
+                    print(f"Verifications today: {stats['recent_verifications']}")
+                    print(f"Verification database size: {stats['database_size_bytes'] / (1024*1024):.2f} MB")
+        except KeyboardInterrupt:
+            print("\nDownload batch interrupted by user. Flushing database...")
             if self.verification_manager:
-                stats = self.verification_manager.get_statistics()
-                print("\nVerification Statistics:")
-                print(f"Total verified files: {stats['total_records']}")
-                print(f"Valid files: {stats['status_counts'].get('VALID', 0)}")
-                print(f"Files with hash mismatch: {stats['status_counts'].get('HASH_MISMATCH', 0)}")
-                print(f"Corrupt files: {stats['status_counts'].get('CORRUPT', 0)}")
-                print(f"Verifications today: {stats['recent_verifications']}")
-                print(f"Verification database size: {stats['database_size_bytes'] / (1024*1024):.2f} MB") 
+                self.verification_manager.flush()
+            raise  # Re-raise to let the main program handle it
+        except Exception as e:
+            print(f"\nError in download batch: {e}")
+            if self.verification_manager:
+                self.verification_manager.flush()
+            raise  # Re-raise to let the main program handle it 

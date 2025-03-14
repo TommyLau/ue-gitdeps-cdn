@@ -2,6 +2,8 @@
 
 import sqlite3
 import threading
+import signal
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -19,7 +21,7 @@ class SQLiteVerificationManager:
         """
         self.base_dir = base_dir
         self.force_verify = force_verify
-        self.db_path = base_dir / '.verification.db'
+        self.db_path = base_dir / '.verification.sqlite3'
         
         # Ensure the database directory exists
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -29,6 +31,25 @@ class SQLiteVerificationManager:
         
         # Initialize database
         self._init_database()
+        
+        # Register signal handlers for graceful shutdown
+        self._register_signal_handlers()
+    
+    def _register_signal_handlers(self):
+        """Register signal handlers to ensure database is properly closed on interruption."""
+        # Define the signal handler
+        def signal_handler(sig, frame):
+            print(f"\nReceived signal {sig}, flushing database and exiting...")
+            self.flush()
+            sys.exit(0)
+        
+        # Register the handler for common interrupt signals
+        signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+        signal.signal(signal.SIGTERM, signal_handler)  # Termination request
+        
+        # On Windows, SIGBREAK is sent when Ctrl+Break is pressed
+        if hasattr(signal, 'SIGBREAK'):
+            signal.signal(signal.SIGBREAK, signal_handler)
     
     def _get_connection(self) -> sqlite3.Connection:
         """Get a thread-local database connection."""
@@ -210,8 +231,28 @@ class SQLiteVerificationManager:
             print(f"Warning: Error getting statistics: {e}")
             return {'error': str(e)}
     
+    def flush(self) -> None:
+        """Flush all pending changes to the database and ensure it's in a consistent state."""
+        try:
+            if hasattr(self.local, 'connection'):
+                # Execute PRAGMA wal_checkpoint to ensure all WAL data is written to the main database file
+                self.local.connection.execute('PRAGMA wal_checkpoint(FULL)')
+                # Commit any pending transactions
+                self.local.connection.commit()
+                print("Database flushed successfully.")
+        except Exception as e:
+            print(f"Warning: Error flushing database: {e}")
+    
     def close(self) -> None:
-        """Close database connections."""
-        if hasattr(self.local, 'connection'):
-            self.local.connection.close()
-            del self.local.connection 
+        """Close database connections and ensure all data is flushed."""
+        try:
+            # First flush any pending changes
+            self.flush()
+            
+            # Then close the connection
+            if hasattr(self.local, 'connection'):
+                self.local.connection.close()
+                del self.local.connection
+                print("Database connection closed.")
+        except Exception as e:
+            print(f"Warning: Error closing database: {e}") 

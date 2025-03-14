@@ -134,12 +134,15 @@ The tool includes a sophisticated verification record system that:
 - Tracks file size, modification time, and expected hash to detect changes
 - Provides detailed statistics about verification status
 - Improves performance by avoiding redundant verifications
+- Ensures data integrity by properly flushing the database when the program is interrupted
 
 To use this feature:
 
 - Files are automatically recorded after successful verification
 - Use `--force-verify` to verify all files regardless of previous verification
 - Use `--show-stats` to display verification statistics without downloading
+- The database is stored as `.verification.sqlite3` in your output directory
+- If you interrupt the program (Ctrl+C), the database will be properly flushed to prevent data loss
 
 ## Configuration
 
