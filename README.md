@@ -80,7 +80,7 @@ To use the pre-built image:
 docker pull ghcr.io/tommylau/ue-gitdeps-cdn:latest
 
 # Run the container
-docker run -v /path/on/host/output:/app/output ghcr.io/tommylau/ue-gitdeps-cdn:latest path/to/Commit.gitdeps.xml [options]
+docker run --rm -v /path/on/host/output:/app/output ghcr.io/tommylau/ue-gitdeps-cdn:latest path/to/Commit.gitdeps.xml --output-dir /app/output [options]
 ```
 
 You can also use specific version tags:
@@ -92,12 +92,10 @@ docker pull ghcr.io/tommylau/ue-gitdeps-cdn:v1.0.0
 
 ```
 --workers INT          Number of concurrent downloads (default: 5)
---cache-dir PATH      Directory for cached files (default: ./output)
+--output-dir PATH      Directory for downloaded files (default: ./output)
 --max-retries INT     Maximum number of download retries (default: 5)
 --timeout INT         Download timeout in seconds (default: 30)
 --chunk-size INT      Download chunk size in bytes (default: 8192)
---cache-max-size STR  Maximum cache size (default: 100GB)
---cache-cleanup-threshold INT  Cache cleanup threshold percentage (default: 90)
 ```
 
 ## Download Status Indicators
@@ -124,14 +122,6 @@ The tool implements intelligent download handling:
 - Hash verification is performed after decompression for gzipped files
 - Real-time progress tracking for both decompression and hash verification phases
 
-## Cache Management
-
-The tool includes a sophisticated cache management system that:
-- Stores downloaded files in a configurable cache directory
-- Automatically cleans up old files when cache size exceeds threshold
-- Uses access time-based eviction strategy
-- Verifies file integrity using SHA-1 hashes
-
 ## Configuration
 
 ### Nginx Configuration Example
@@ -141,7 +131,7 @@ server {
     listen 80;
     server_name cdn.example.com;
 
-    root /path/to/cache_dir;
+    root /path/to/output_dir;
     
     # Disable directory listing
     autoindex off;
@@ -204,7 +194,6 @@ Development dependencies:
 
 - Ensure sufficient disk space for dependency storage
 - Configure HTTPS in production environment
-- Regularly clean unused cache files (handled automatically)
 - Directory listing is disabled by default
 - Access to hidden files is blocked
 - Security headers are implemented

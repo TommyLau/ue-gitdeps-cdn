@@ -1,13 +1,14 @@
 """Download manager for handling concurrent file downloads."""
 
 import asyncio
+import hashlib
+import gzip
 from typing import List, Dict, Callable, Tuple
 import aiohttp
 from tqdm import tqdm
 from tqdm.asyncio import tqdm as async_tqdm
 from pathlib import Path
 from enum import Enum, auto
-from src.core.cache import CacheManager
 
 
 class DownloadStatus(Enum):
@@ -27,15 +28,14 @@ class AsyncDownloader:
     """Manage concurrent downloads with progress tracking."""
     
     def __init__(self, max_workers: int = 5, max_retries: int = 5,
-                 timeout: int = 30, chunk_size: int = 8192, cache_dir: str | Path = None):
+                 timeout: int = 30, chunk_size: int = 8192, output_dir: str | Path = None):
         """Initialize the downloader with configuration parameters."""
         self.max_workers = max_workers
         self.max_retries = max_retries
         self.timeout = timeout
         self.chunk_size = chunk_size
-        self.cache_dir = Path(cache_dir) if cache_dir else None
+        self.output_dir = Path(output_dir) if output_dir else None
         self.session = None
-        self.cache_manager = CacheManager(cache_dir) if cache_dir else None
     
     async def __aenter__(self):
         """Create aiohttp session when entering context."""
@@ -47,6 +47,64 @@ class AsyncDownloader:
         """Close aiohttp session when exiting context."""
         if self.session:
             await self.session.close()
+    
+    def calculate_hash(self, file_path: str | Path, progress_callback=None) -> str:
+        """
+        Calculate SHA-1 hash of a file after decompressing gzipped content.
+        
+        Args:
+            file_path: Path to the gzipped file to hash
+            progress_callback: Optional callback function to report progress (phase, progress)
+                               phase: 'decompress' or 'hash', progress: 0.0 to 1.0
+        
+        Returns:
+            SHA-1 hash as hexadecimal string or "invalid_gzip_file" if decompression fails
+        """
+        sha1_hash = hashlib.sha1()
+        file_path = Path(file_path)
+        file_size = file_path.stat().st_size
+        
+        try:
+            # Process gzip file - stream directly without storing in memory
+            try:
+                with gzip.open(file_path, 'rb') as gz_file:
+                    # For progress reporting
+                    total_read = 0
+                    last_progress_report = 0
+                    
+                    # Read in chunks and update hash directly
+                    while True:
+                        chunk = gz_file.read(65536)  # Use larger chunks (64KB)
+                        if not chunk:
+                            break
+                        
+                        # Update hash with this chunk
+                        sha1_hash.update(chunk)
+                        
+                        # Update decompression progress
+                        if progress_callback:
+                            total_read += len(chunk)
+                            # Only report progress every ~1% to reduce overhead
+                            current_progress = min(total_read / (file_size * 10), 1.0)  # Estimate decompressed size
+                            if current_progress - last_progress_report >= 0.01:
+                                progress_callback('decompress', current_progress)
+                                last_progress_report = current_progress
+                
+                # Report 100% completion for decompression phase
+                if progress_callback:
+                    progress_callback('decompress', 1.0)
+                    # Also report 100% for hash phase since we've already calculated it
+                    progress_callback('hash', 1.0)
+                
+            except (OSError, EOFError, gzip.BadGzipFile) as e:
+                print(f"  WARNING: Failed to decompress file for hash calculation: {e}")
+                return "invalid_gzip_file"
+        
+        except Exception as e:
+            print(f"  ERROR: Failed to calculate hash: {e}")
+            return "invalid_gzip_file"
+            
+        return sha1_hash.hexdigest()
     
     def _get_status_indicator(self, status: DownloadStatus) -> str:
         """Get formatted status indicator with emoji.
@@ -127,7 +185,7 @@ class AsyncDownloader:
             Tuple of (success, status)
         """
         hash_callback = self._create_hash_progress_callback(pbar, dest_path, file_size)
-        actual_hash = self.cache_manager.calculate_hash(dest_path, hash_callback)
+        actual_hash = self.calculate_hash(dest_path, hash_callback)
         
         # Ensure progress bar is at 100% after verification
         pbar.n = file_size
@@ -155,8 +213,8 @@ class AsyncDownloader:
         if not self.session:
             raise RuntimeError("Downloader must be used as async context manager")
         
-        if self.cache_dir:
-            dest_path = self.cache_dir / dest
+        if self.output_dir:
+            dest_path = self.output_dir / dest
         else:
             dest_path = Path(dest)
 
@@ -181,7 +239,7 @@ class AsyncDownloader:
                         dest_path.unlink()
                         start_pos = 0
                     # If file size matches, verify hash
-                    elif current_size == file_size and expected_hash and self.cache_manager:
+                    elif current_size == file_size and expected_hash:
                         success, status = await self._verify_file_hash(dest_path, expected_hash, pbar, file_size)
                         if success:
                             pbar.close()
@@ -219,7 +277,7 @@ class AsyncDownloader:
                             pbar.update(len(chunk))
                     
                     # Only verify hash if file size matches expected size
-                    if dest_path.stat().st_size == file_size and expected_hash and self.cache_manager:
+                    if dest_path.stat().st_size == file_size and expected_hash:
                         success, status = await self._verify_file_hash(dest_path, expected_hash, pbar, file_size)
                         if not success:
                             if attempt < self.max_retries - 1 and status == DownloadStatus.HASH:  # Try one re-download on hash mismatch
