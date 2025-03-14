@@ -1,12 +1,26 @@
 """Download manager for handling concurrent file downloads."""
 
 import asyncio
-from typing import List, Dict
+from typing import List, Dict, Callable, Tuple
 import aiohttp
 from tqdm import tqdm
 from tqdm.asyncio import tqdm as async_tqdm
 from pathlib import Path
+from enum import Enum, auto
 from src.core.cache import CacheManager
+
+
+class DownloadStatus(Enum):
+    """Enumeration of possible download status codes."""
+    NEW = auto()       # New download
+    RESUME = auto()    # Resuming partial download
+    REDOWN = auto()    # Re-downloading file
+    UNZIP = auto()     # Decompressing file
+    VERIFY = auto()    # Verifying file hash
+    VALID = auto()     # File is valid
+    CORRUPT = auto()   # Corrupted file
+    HASH = auto()      # Hash mismatch
+    ERROR = auto()     # Download error
 
 
 class AsyncDownloader:
@@ -34,6 +48,108 @@ class AsyncDownloader:
         if self.session:
             await self.session.close()
     
+    def _get_status_indicator(self, status: DownloadStatus) -> str:
+        """Get formatted status indicator with emoji.
+        
+        Args:
+            status: DownloadStatus enum value
+            
+        Returns:
+            Formatted status string with emoji
+        """
+        status_indicators = {
+            DownloadStatus.NEW: "⬇️ NEW",         # New download
+            DownloadStatus.RESUME: "⏯️ RESUME",   # Resuming partial download
+            DownloadStatus.REDOWN: "📥 REDOWN",   # Re-downloading file
+            DownloadStatus.UNZIP: "🔄 UNZIP",     # Decompressing file
+            DownloadStatus.VERIFY: "🔍 VERIFY",   # Verifying file hash
+            DownloadStatus.VALID: "✅ VALID",     # File is valid
+            DownloadStatus.CORRUPT: "🔄 CORRUPT", # Corrupted file
+            DownloadStatus.HASH: "♻️ HASH",       # Hash mismatch
+            DownloadStatus.ERROR: "❌ ERROR"       # Download error
+        }
+        return status_indicators.get(status, f"❓ {status.name}")
+    
+    def _create_hash_progress_callback(self, pbar: tqdm, dest_path: Path, file_size: int) -> Callable:
+        """Create a callback function for hash verification progress updates.
+        
+        Args:
+            pbar: Progress bar to update
+            dest_path: Path to the file being processed
+            file_size: Expected file size
+            
+        Returns:
+            Callback function for hash verification progress
+        """
+        def hash_progress_callback(phase, progress):
+            if phase == 'decompress':
+                status = self._get_status_indicator(DownloadStatus.UNZIP)
+                pbar.set_description(f"[{status:^10}] {dest_path}")
+                # Show full 0-100% for decompression
+                pbar.n = int(file_size * progress)
+                pbar.refresh()
+            elif phase == 'hash':
+                status = self._get_status_indicator(DownloadStatus.VERIFY)
+                pbar.set_description(f"[{status:^10}] {dest_path}")
+                # Show full 0-100% for hash verification
+                pbar.n = int(file_size * progress)
+                pbar.refresh()
+        return hash_progress_callback
+    
+    def _update_progress_bar(self, pbar: tqdm, status: DownloadStatus, dest_path: Path, position: int = None, total: int = None) -> None:
+        """Update progress bar with new status and position.
+        
+        Args:
+            pbar: Progress bar to update
+            status: DownloadStatus enum value
+            dest_path: Path to the file being processed
+            position: Current position (bytes downloaded)
+            total: Total size (for reset)
+        """
+        status_str = self._get_status_indicator(status)
+        pbar.set_description(f"[{status_str:^10}] {dest_path}")
+        if total is not None:
+            pbar.reset(total=total)
+        if position is not None:
+            pbar.n = position
+        pbar.refresh()
+    
+    async def _verify_file_hash(self, dest_path: Path, expected_hash: str, pbar: tqdm, file_size: int) -> Tuple[bool, DownloadStatus]:
+        """Verify file hash with progress tracking.
+        
+        Args:
+            dest_path: Path to the file to verify
+            expected_hash: Expected hash value
+            pbar: Progress bar to update
+            file_size: Expected file size
+            
+        Returns:
+            Tuple of (success, status)
+        """
+        hash_callback = self._create_hash_progress_callback(pbar, dest_path, file_size)
+        actual_hash = self.cache_manager.calculate_hash(dest_path, hash_callback)
+        
+        # Ensure progress bar is at 100% after verification
+        pbar.n = file_size
+        pbar.refresh()
+        
+        if actual_hash == "invalid_gzip_file":
+            status = DownloadStatus.CORRUPT  # File exists but can't be unzipped
+            self._update_progress_bar(pbar, status, dest_path)
+            if dest_path.exists():
+                dest_path.unlink()
+            return False, status
+        
+        hash_matches = actual_hash.lower() == expected_hash.lower()
+        if not hash_matches:
+            status = DownloadStatus.HASH  # Hash mismatch
+            self._update_progress_bar(pbar, status, dest_path)
+            return False, status
+        
+        status = DownloadStatus.VALID  # File is valid
+        self._update_progress_bar(pbar, status, dest_path)
+        return True, status
+    
     async def download_file(self, url: str, dest: str | Path, file_size: int, expected_hash: str = None) -> bool:
         """Download a single file with progress tracking and retries."""
         if not self.session:
@@ -47,9 +163,10 @@ class AsyncDownloader:
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Create progress bar only once outside the retry loop
-        status = "⬇️ NEW"  # Default: new download
+        status = DownloadStatus.NEW  # Default: new download
         start_pos = 0
-        desc = f"[{status:^10}] {dest_path}"
+        status_str = self._get_status_indicator(status)
+        desc = f"[{status_str:^10}] {dest_path}"
         pbar = tqdm(total=file_size, initial=start_pos, unit='B', unit_scale=True, desc=desc, leave=True)
        
         for attempt in range(self.max_retries):
@@ -60,74 +177,32 @@ class AsyncDownloader:
                     
                     # If file is larger than expected, re-download
                     if current_size > file_size:
-                        status = "📥 REDOWN"  # File too large, needs re-download
+                        status = DownloadStatus.REDOWN  # File too large, needs re-download
                         dest_path.unlink()
                         start_pos = 0
                     # If file size matches, verify hash
                     elif current_size == file_size and expected_hash and self.cache_manager:
-                        # Create a progress callback for hash verification
-                        def hash_progress_callback(phase, progress):
-                            if phase == 'decompress':
-                                status = "🔄 UNZIP"  # Decompressing file
-                                pbar.set_description(f"[{status:^10}] {dest_path}")
-                                # Show full 0-100% for decompression
-                                pbar.n = int(file_size * progress)
-                                pbar.refresh()
-                            elif phase == 'hash':
-                                status = "🔍 VERIFY"  # Calculating hash
-                                pbar.set_description(f"[{status:^10}] {dest_path}")
-                                # Show full 0-100% for hash verification
-                                pbar.n = int(file_size * progress)
-                                pbar.refresh()
-                        
-                        # Calculate hash with progress updates
-                        actual_hash = self.cache_manager.calculate_hash(dest_path, hash_progress_callback)
-                        
-                        # Ensure progress bar is at 100% after verification
-                        pbar.n = file_size
-                        pbar.refresh()
-                        
-                        if actual_hash == "invalid_gzip_file":
-                            status = "🔄 CORRUPT"  # File exists but can't be unzipped
-                            pbar.set_description(f"[{status:^10}] {dest_path}")
-                            pbar.refresh()
-                            dest_path.unlink()
-                            start_pos = 0
-                        elif actual_hash.lower() == expected_hash.lower():
-                            status = "✅ VALID"  # File is valid
-                            pbar.set_description(f"[{status:^10}] {dest_path}")
-                            pbar.refresh()
+                        success, status = await self._verify_file_hash(dest_path, expected_hash, pbar, file_size)
+                        if success:
                             pbar.close()
                             return True  # File is valid
-                        else:
-                            status = "♻️ HASH"  # File exists but hash mismatch
-                            pbar.set_description(f"[{status:^10}] {dest_path}")
-                            pbar.refresh()
-                            dest_path.unlink()
-                            start_pos = 0
+                        start_pos = 0  # Re-download on hash mismatch or corrupt file
                     # If file is smaller, try to resume download
                     elif current_size < file_size:
-                        status = "⏯️ RESUME"  # Partial file, will resume
+                        status = DownloadStatus.RESUME  # Partial file, will resume
                         start_pos = current_size
 
-                # Update progress bar description and position without creating a new one
-                pbar.set_description(f"[{status:^10}] {dest_path}")
-                # Reset with initial position but maintain the same bar format
-                pbar.reset(total=file_size)
-                pbar.n = start_pos
-                pbar.refresh()
+                # Update progress bar with current status and position
+                self._update_progress_bar(pbar, status, dest_path, start_pos, file_size)
 
                 headers = {'Range': f'bytes={start_pos}-'} if start_pos > 0 else {}
                 async with self.session.get(url, headers=headers) as response:
                     if start_pos > 0 and response.status != 206:  # Resume failed
-                        status = "📥 REDOWN"  # Switch to full re-download
+                        status = DownloadStatus.REDOWN  # Switch to full re-download
                         start_pos = 0
                         if dest_path.exists():
                             dest_path.unlink()
-                        pbar.set_description(f"[{status:^10}] {dest_path}")
-                        pbar.reset(total=file_size)
-                        pbar.n = 0
-                        pbar.refresh()
+                        self._update_progress_bar(pbar, status, dest_path, 0, file_size)
                         continue
                     
                     if response.status not in (200, 206):
@@ -145,83 +220,44 @@ class AsyncDownloader:
                     
                     # Only verify hash if file size matches expected size
                     if dest_path.stat().st_size == file_size and expected_hash and self.cache_manager:
-                        # Create a progress callback for hash verification
-                        def hash_progress_callback(phase, progress):
-                            if phase == 'decompress':
-                                status = "🔄 UNZIP"  # Decompressing file
-                                pbar.set_description(f"[{status:^10}] {dest_path}")
-                                # Show full 0-100% for decompression
-                                pbar.n = int(file_size * progress)
-                                pbar.refresh()
-                            elif phase == 'hash':
-                                status = "🔍 VERIFY"  # Calculating hash
-                                pbar.set_description(f"[{status:^10}] {dest_path}")
-                                # Show full 0-100% for hash verification
-                                pbar.n = int(file_size * progress)
-                                pbar.refresh()
-                        
-                        # Calculate hash with progress updates
-                        actual_hash = self.cache_manager.calculate_hash(dest_path, hash_progress_callback)
-                        
-                        # Ensure progress bar is at 100% after verification
-                        pbar.n = file_size
-                        pbar.refresh()
-                        
-                        if actual_hash == "invalid_gzip_file":
-                            status = "🔄 CORRUPT"  # File exists but can't be unzipped
-                            pbar.set_description(f"[{status:^10}] {dest_path}")
-                            pbar.refresh()
-                            if dest_path.exists():
-                                dest_path.unlink()
-                            pbar.close()
-                            return False
-                        hash_matches = actual_hash.lower() == expected_hash.lower()
-                        if not hash_matches:
-                            if attempt < self.max_retries - 1:  # Try one re-download on hash mismatch
-                                status = "📥 REDOWN"
-                                pbar.set_description(f"[{status:^10}] {dest_path}")
-                                pbar.refresh()
+                        success, status = await self._verify_file_hash(dest_path, expected_hash, pbar, file_size)
+                        if not success:
+                            if attempt < self.max_retries - 1 and status == DownloadStatus.HASH:  # Try one re-download on hash mismatch
+                                status = DownloadStatus.REDOWN
+                                self._update_progress_bar(pbar, status, dest_path)
                                 if dest_path.exists():
                                     dest_path.unlink()
                                 start_pos = 0
-                                pbar.reset(total=file_size)
-                                pbar.n = 0
-                                pbar.refresh()
+                                self._update_progress_bar(pbar, status, dest_path, 0, file_size)
                                 continue
-                            status = "♻️ HASH"  # Final hash mismatch
-                            pbar.set_description(f"[{status:^10}] {dest_path}")
-                            pbar.refresh()
-                            if dest_path.exists():
-                                dest_path.unlink()
                             pbar.close()
                             return False
                     
-                    status = "✅ VALID"  # Download complete and valid
-                    pbar.set_description(f"[{status:^10}] {dest_path}")
+                    status = DownloadStatus.VALID  # Download complete and valid
+                    self._update_progress_bar(pbar, status, dest_path)
                     pbar.close()
                     return True
                     
             except Exception as e:
                 if attempt == self.max_retries - 1:
-                    status = "❌ ERROR"
-                    pbar.set_description(f"[{status:^10}] {str(e)[:50]}...")
+                    status = DownloadStatus.ERROR
+                    self._update_progress_bar(pbar, status, dest_path)
+                    pbar.set_description(f"[{self._get_status_indicator(status):^10}] {str(e)[:50]}...")
                     pbar.close()
                     return False
                 
                 # Get current file size for resume
                 if dest_path.exists():
                     start_pos = dest_path.stat().st_size
-                    status = "⏯️ RESUME"
+                    status = DownloadStatus.RESUME
                 else:
                     start_pos = 0
-                    status = "⬇️ NEW"
+                    status = DownloadStatus.NEW
                 
-                pbar.set_description(f"[{status:^10}] {dest_path}")
+                self._update_progress_bar(pbar, status, dest_path)
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
                 # Reset with proper initial position
-                pbar.reset(total=file_size)
-                pbar.n = start_pos
-                pbar.refresh()
+                self._update_progress_bar(pbar, status, dest_path, start_pos, file_size)
                 continue
         
         pbar.close()
