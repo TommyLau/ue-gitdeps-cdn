@@ -77,10 +77,10 @@ To use the pre-built image:
 
 ```bash
 # Pull the latest image
-docker pull ghcr.io/tommylau/ue-gitdeps-cdn:main
+docker pull ghcr.io/tommylau/ue-gitdeps-cdn:latest
 
 # Run the container
-docker run -v /path/on/host/output:/app/output ghcr.io/tommylau/ue-gitdeps-cdn:main path/to/Commit.gitdeps.xml [options]
+docker run -v /path/on/host/output:/app/output ghcr.io/tommylau/ue-gitdeps-cdn:latest path/to/Commit.gitdeps.xml [options]
 ```
 
 You can also use specific version tags:
@@ -169,20 +169,24 @@ This repository includes GitHub Actions workflows for continuous integration and
 ### Docker Image Build and Publish
 
 The workflow automatically builds and publishes Docker images to GitHub Container Registry (GHCR) when:
-- Code is pushed to the `main` branch
+- Code is pushed to the `main` branch (tagged as `latest`)
 - A new tag is created (e.g., `v1.0.0`)
 - A pull request is opened against the `main` branch (image is built but not published)
 
 The workflow:
 1. Builds the Docker image using the repository's Dockerfile
-2. Tags the image with appropriate version information
+2. Tags the image with appropriate version information:
+   - `latest` tag for the main branch
+   - Semantic version tags for releases (e.g., `v1.0.0`, `1.0`)
+   - Branch name for feature branches
+   - Short commit SHA for all builds
 3. Pushes the image to GHCR (except for pull requests)
 4. Utilizes caching to speed up subsequent builds
 
 To use this feature:
 1. Ensure your repository has the necessary permissions to publish packages
 2. Push your changes to the repository
-3. Access your Docker images at `ghcr.io/username/ue-gitdeps-cdn`
+3. Access your Docker images at `ghcr.io/tommylau/ue-gitdeps-cdn`
 
 ## Dependencies
 
