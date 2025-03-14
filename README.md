@@ -18,8 +18,11 @@ A Python tool to download Unreal Engine dependencies specified in `Commit.gitdep
 - Nginx
 - Sufficient disk space for dependency storage
 - Conda (recommended) or pip
+- Docker (optional)
 
 ## Quick Start
+
+### Using Python Directly
 
 1. Clone the repository:
 ```bash
@@ -45,6 +48,26 @@ cd ue-gitdeps-cdn
 ```bash
 python main.py path/to/Commit.gitdeps.xml [options]
 ```
+
+### Using Docker
+
+1. Clone the repository:
+```bash
+git clone https://github.com/TommyLau/ue-gitdeps-cdn.git
+cd ue-gitdeps-cdn
+```
+
+2. Build the Docker image:
+```bash
+docker build -t ue-gitdeps-cdn .
+```
+
+3. Run the container:
+```bash
+docker run -v /path/on/host/output:/app/output ue-gitdeps-cdn path/to/Commit.gitdeps.xml [options]
+```
+
+Replace `/path/on/host/output` with the directory on your host machine where you want to store the downloaded files.
 
 ### Command-line Options
 
