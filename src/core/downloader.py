@@ -45,13 +45,16 @@ class AsyncDownloader:
             dest_path = Path(dest)
 
         dest_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Create progress bar only once outside the retry loop
+        status = "⬇️ NEW"  # Default: new download
+        start_pos = 0
+        desc = f"[{status:^10}] {dest_path}"
+        pbar = tqdm(total=file_size, initial=start_pos, unit='B', unit_scale=True, desc=desc, leave=False)
        
         for attempt in range(self.max_retries):
             try:
                 # Check if file exists and verify size/hash
-                status = "⬇️ NEW"  # Default: new download
-                start_pos = 0
-
                 if dest_path.exists():
                     current_size = dest_path.stat().st_size
                     
@@ -59,37 +62,49 @@ class AsyncDownloader:
                     if current_size > file_size:
                         status = "📥 REDOWN"  # File too large, needs re-download
                         dest_path.unlink()
+                        start_pos = 0
                     # If file size matches, verify hash
                     elif current_size == file_size and expected_hash and self.cache_manager:
                         actual_hash = self.cache_manager.calculate_hash(dest_path)
                         if actual_hash == "invalid_gzip_file":
                             status = "🔄 CORRUPT"  # File exists but can't be unzipped
                             dest_path.unlink()
+                            start_pos = 0
                         elif actual_hash.lower() == expected_hash.lower():
+                            pbar.close()
                             return True  # File is valid
                         else:
                             status = "♻️ HASH"  # File exists but hash mismatch
                             dest_path.unlink()
+                            start_pos = 0
                     # If file is smaller, try to resume download
                     elif current_size < file_size:
                         status = "⏯️ RESUME"  # Partial file, will resume
                         start_pos = current_size
 
-                desc = f"[{status:^10}] {dest_path}"
-                pbar = tqdm(total=file_size, initial=start_pos, unit='B', unit_scale=True, desc=desc, leave=False)
+                # Update progress bar description and position without creating a new one
+                pbar.set_description(f"[{status:^10}] {dest_path}")
+                # Reset with initial position but maintain the same bar format
+                pbar.reset(total=file_size)
+                pbar.update(start_pos)
 
                 headers = {'Range': f'bytes={start_pos}-'} if start_pos > 0 else {}
                 async with self.session.get(url, headers=headers) as response:
                     if start_pos > 0 and response.status != 206:  # Resume failed
                         status = "📥 REDOWN"  # Switch to full re-download
                         start_pos = 0
-                        pbar.reset()
+                        if dest_path.exists():
+                            dest_path.unlink()
+                        pbar.set_description(f"[{status:^10}] {dest_path}")
+                        pbar.reset(total=file_size)
+                        pbar.update(start_pos)
                         continue
                     
                     if response.status not in (200, 206):
                         if attempt == self.max_retries - 1:
                             pbar.close()
                             return False
+                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
                         continue
                     
                     mode = 'ab' if start_pos > 0 else 'wb'
@@ -98,27 +113,31 @@ class AsyncDownloader:
                             f.write(chunk)
                             pbar.update(len(chunk))
                     
-                    pbar.close()
-                    
                     # Only verify hash if file size matches expected size
                     if dest_path.stat().st_size == file_size and expected_hash and self.cache_manager:
                         actual_hash = self.cache_manager.calculate_hash(dest_path)
                         if actual_hash == "invalid_gzip_file":
                             if dest_path.exists():
                                 dest_path.unlink()
+                            pbar.close()
                             return False
                         hash_matches = actual_hash.lower() == expected_hash.lower()
                         if not hash_matches:
                             if attempt < self.max_retries - 1:  # Try one re-download on hash mismatch
                                 status = "📥 REDOWN"
+                                if dest_path.exists():
+                                    dest_path.unlink()
                                 start_pos = 0
-                                dest_path.unlink()
-                                pbar.reset()
+                                pbar.set_description(f"[{status:^10}] {dest_path}")
+                                pbar.reset(total=file_size)
+                                pbar.update(start_pos)
                                 continue
                             if dest_path.exists():
                                 dest_path.unlink()
+                            pbar.close()
                             return False
                     
+                    pbar.close()
                     return True
                     
             except Exception as e:
@@ -132,8 +151,11 @@ class AsyncDownloader:
                     start_pos = dest_path.stat().st_size
                     status = "⏯️ RESUME"
                 
+                pbar.set_description(f"[{status:^10}] {dest_path}")
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                pbar.reset(start_pos)  # Reset with new start position
+                # Reset with proper initial position
+                pbar.reset(total=file_size)
+                pbar.update(start_pos)
                 continue
         
         pbar.close()
