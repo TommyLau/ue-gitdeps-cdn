@@ -78,10 +78,23 @@ class AsyncDownloader:
     async def __aenter__(self):
         """Create aiohttp session when entering context."""
         timeout = aiohttp.ClientTimeout(total=self.timeout)
+        
+        # Create a TCPConnector with proper SSL settings
+        connector = aiohttp.TCPConnector(ssl=False)  # Disable SSL verification to allow proxies to work
+        
+        # Print proxy settings for debugging
+        if self.proxies:
+            print(f"Using proxy settings: {self.proxies}")
+        
+        # Create session
+        # For aiohttp 3.8+, we need to explicitly set proxy for each request
+        # For older versions, we rely on the environment variables
         self.session = aiohttp.ClientSession(
             timeout=timeout,
-            proxies=self.proxies
+            connector=connector,
+            trust_env=True  # Enable use of HTTP_PROXY/HTTPS_PROXY environment variables
         )
+        
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -322,7 +335,17 @@ class AsyncDownloader:
                 self._update_progress_bar(pbar, status, dest_path, start_pos, file_size)
 
                 headers = {'Range': f'bytes={start_pos}-'} if start_pos > 0 else {}
-                async with self.session.get(url, headers=headers) as response:
+                
+                # Get the correct proxy URL for the protocol
+                proxy = None
+                if self.proxies:
+                    if url.startswith('https://') and 'https' in self.proxies:
+                        proxy = self.proxies['https']
+                    elif url.startswith('http://') and 'http' in self.proxies:
+                        proxy = self.proxies['http']
+                
+                # Add proxy to the session.get call
+                async with self.session.get(url, headers=headers, proxy=proxy) as response:
                     if start_pos > 0 and response.status != 206:  # Resume failed
                         status = DownloadStatus.REDOWN  # Switch to full re-download
                         start_pos = 0

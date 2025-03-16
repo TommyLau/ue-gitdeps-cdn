@@ -17,6 +17,15 @@ def get_default_output_dir() -> Path:
 
 def get_system_proxies() -> dict:
     """Get system proxy settings from environment variables."""
+    # Debug print of proxy environment variables
+    print("Environment Variables:")
+    print(f"  HTTP_PROXY:  {os.environ.get('HTTP_PROXY')}")
+    print(f"  http_proxy:  {os.environ.get('http_proxy')}")
+    print(f"  HTTPS_PROXY: {os.environ.get('HTTPS_PROXY')}")
+    print(f"  https_proxy: {os.environ.get('https_proxy')}")
+    print(f"  NO_PROXY:    {os.environ.get('NO_PROXY')}")
+    print(f"  no_proxy:    {os.environ.get('no_proxy')}")
+    
     return {
         'http': os.environ.get('http_proxy') or os.environ.get('HTTP_PROXY'),
         'https': os.environ.get('https_proxy') or os.environ.get('HTTPS_PROXY'),
@@ -52,6 +61,7 @@ async def main():
     # Get system proxy settings
     proxies = get_system_proxies()
     proxies = {k: v for k, v in proxies.items() if v is not None}
+    print(f"Using proxies: {proxies}")
     
     # Initialize components
     deps_parser = GitDepsParser(args.xml_path)
