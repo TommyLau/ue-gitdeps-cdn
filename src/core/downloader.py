@@ -31,7 +31,7 @@ class AsyncDownloader:
     
     def __init__(self, max_workers: int = 5, max_retries: int = 5,
                  timeout: int = 30, chunk_size: int = 8192, output_dir: str | Path = None,
-                 force_verify: bool = False):
+                 force_verify: bool = False, proxies: Dict[str, str] = None):
         """Initialize the downloader with configuration parameters."""
         self.max_workers = max_workers
         self.max_retries = max_retries
@@ -42,6 +42,7 @@ class AsyncDownloader:
         self.verification_manager = SQLiteVerificationManager(
             self.output_dir, force_verify=force_verify
         ) if self.output_dir else None
+        self.proxies = proxies
         
         # Register signal handlers for graceful shutdown
         self._register_signal_handlers()
@@ -77,7 +78,10 @@ class AsyncDownloader:
     async def __aenter__(self):
         """Create aiohttp session when entering context."""
         timeout = aiohttp.ClientTimeout(total=self.timeout)
-        self.session = aiohttp.ClientSession(timeout=timeout)
+        self.session = aiohttp.ClientSession(
+            timeout=timeout,
+            proxies=self.proxies
+        )
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):

@@ -100,6 +100,24 @@ docker pull ghcr.io/tommylau/ue-gitdeps-cdn:v1.0.0
 --show-stats          Show verification statistics without downloading files
 ```
 
+### Proxy Configuration
+
+The tool automatically uses system proxy settings from environment variables:
+- `HTTP_PROXY` or `http_proxy` for HTTP proxy
+- `HTTPS_PROXY` or `https_proxy` for HTTPS proxy
+- `NO_PROXY` or `no_proxy` for proxy exclusions
+
+Example usage with proxy:
+```bash
+# Set proxy environment variables
+export http_proxy="http://proxy:8080"
+export https_proxy="http://proxy:8080"
+export no_proxy="localhost,127.0.0.1"
+
+# Run the program
+python main.py path/to/Commit.gitdeps.xml
+```
+
 ## Download Status Indicators
 
 The tool provides detailed status indicators during the download process:

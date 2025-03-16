@@ -4,6 +4,7 @@ import asyncio
 import argparse
 import signal
 import sys
+import os
 from pathlib import Path
 from src.core.parser import GitDepsParser
 from src.core.downloader import AsyncDownloader
@@ -12,6 +13,15 @@ from src.core.downloader import AsyncDownloader
 def get_default_output_dir() -> Path:
     """Get the default output directory (./output)."""
     return Path(__file__).parent / "output"
+
+
+def get_system_proxies() -> dict:
+    """Get system proxy settings from environment variables."""
+    return {
+        'http': os.environ.get('http_proxy') or os.environ.get('HTTP_PROXY'),
+        'https': os.environ.get('https_proxy') or os.environ.get('HTTPS_PROXY'),
+        'no_proxy': os.environ.get('no_proxy') or os.environ.get('NO_PROXY')
+    }
 
 
 async def main():
@@ -39,6 +49,10 @@ async def main():
     # Create output directory if it doesn't exist
     args.output_dir.mkdir(parents=True, exist_ok=True)
     
+    # Get system proxy settings
+    proxies = get_system_proxies()
+    proxies = {k: v for k, v in proxies.items() if v is not None}
+    
     # Initialize components
     deps_parser = GitDepsParser(args.xml_path)
     downloader = AsyncDownloader(
@@ -47,7 +61,8 @@ async def main():
         timeout=args.timeout,
         chunk_size=args.chunk_size,
         output_dir=args.output_dir,
-        force_verify=args.force_verify
+        force_verify=args.force_verify,
+        proxies=proxies if proxies else None
     )
     
     # Set the global downloader reference for the exception handler
